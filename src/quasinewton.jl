@@ -6,8 +6,8 @@ Quasi-Newton descent method.
 """
 mutable struct BFGS{T<:AbstractFloat,
                     V<:AbstractVector{T},
-                    M<:AbstractMatrix{T}} <: CoreMethod
-    invH::M
+                    C<:Cholesky{T}} <: CoreMethod
+    hess::C
     x::V
     g::V
     xpre::V
@@ -22,9 +22,16 @@ end
 @inline argumentvec(M::BFGS) = M.x
 @inline step_origin(M::BFGS) = M.xpre
 
+
 function BFGS(x::AbstractVector{T}) where {T}
     F = float(T)
-    bfgs = BFGS(similar(x, F, (length(x), length(x))),
+    n = length(x)
+    m = similar(x, F, (n, n))
+    for j in 1:n, i in 1:n
+        m[i,j] = (i == j)
+    end
+    cm = cholesky!(m)
+    bfgs = BFGS(cm,
                 similar(x, F),
                 similar(x, F),
                 similar(x, F),
@@ -34,7 +41,6 @@ function BFGS(x::AbstractVector{T}) where {T}
                 similar(x, F),
                 zero(T)
                )
-    reset!(bfgs)
     return bfgs
 end
 
@@ -47,29 +53,30 @@ function init!(M::BFGS{T}, optfn!, x0) where {T}
     M.xdiff .= M.x - M.xpre
     M.gdiff .= M.g - M.gpre
 
-    invH = M.invH
-    nr, nc = size(invH)
+    scale = dot(M.gdiff, M.gdiff) / dot(M.xdiff, M.gdiff)
+    H = M.hess.factors
+    nr, nc = size(H)
     for j in 1:nc, i in 1:nr
-        invH[i, j] = (i == j) * abs(M.xdiff[i] * M.gdiff[j])
+        H[i, j] = (i == j) * sqrt(abs(M.gdiff[i] / M.xdiff[j]))
     end
     return
 end
 
 @inline function reset!(M::BFGS)
-    invH = M.invH
-    nr, nc = size(invH)
+    H = M.hess.factors
+    nr, nc = size(H)
     for j in 1:nc, i in 1:nr
-        invH[i, j] = i == j
+        H[i, j] = (i == j)
     end
     return
 end
 
 function reset!(M::BFGS, x0, scale::Real=1)
     copy!(M.x, x0)
-    invH = M.invH
-    nr, nc = size(invH)
+    H = M.hess.factors
+    nr, nc = size(H)
     for j in 1:nc, i in 1:nr
-        invH[i, j] = (i == j) * scale
+        H[i, j] = (i == j) * sqrt(scale)
     end
     return
 end
@@ -83,7 +90,8 @@ end
 end
 
 function __descent_dir!(M::BFGS)
-    mul!(M.d, M.invH, M.gpre, -1, 0)
+    ldiv!(M.d, M.hess, M.gpre)
+    lmul!(-1, M.d)
     return M.d
 end
 
@@ -102,11 +110,12 @@ function __compute_step!(M::BFGS, optfn!, d, maxstep)
     α = strong_backtracking!(optfn!, xpre, d, M.y, gpre, αmax = maxstep, β = 0.01, σ = 0.9)
     #=
     BFGS update:
-             δγ'B + Bγδ'   ⌈    γ'Bγ ⌉ δδ'
-    B <- B - ----------- + |1 + -----| ---
-                 δ'γ       ⌊     δ'γ ⌋ δ'γ
+             Hδδ'H    γγ'
+    H <- H - ------ + ---
+              δ'Hδ    δ'γ
     =#
     δ, γ = M.xdiff, M.gdiff
+<<<<<<< Updated upstream
     map!(-, γ, g, gpre)
     map!(-, δ, x, xpre)
     denom = dot(δ, γ)
@@ -114,6 +123,25 @@ function __compute_step!(M::BFGS, optfn!, d, maxstep)
     # d <- B * γ
     mul!(d, invH, γ, 1, 0)
     invH .= invH .- (δ .* d' .+ d .* δ') ./ denom .+ δscale .* δ .* δ' ./ denom
+=======
+    γ .= M.g .- M.gpre
+    δ .= M.x .- M.xpre
+
+    #=
+    H = H.U' * H.U
+    d <- H.U * δ
+    δ'Hδ = d ⋅ d
+    =#
+    mul!(M.d, M.hess.U, δ)
+    d1 = dot(M.d, M.d)
+    d2 = dot(δ, γ)
+    # δ <- H.U' * H.U * δ = H * δ
+    mul!(δ, M.hess.U', M.d)
+    rdiv!(δ, sqrt(d1))
+    rdiv!(γ, sqrt(d2))
+    lowrankupdate!(M.hess, γ)
+    lowrankdowndate!(M.hess, δ)
+>>>>>>> Stashed changes
     return α
 end
 
